@@ -10,6 +10,7 @@ const { syncForecasts } = require('./weather/forecastSync');
 const { syncObservations } = require('./weather/observationSync');
 const { checkAndSyncTmax } = require('./weather/tmaxSync');
 const { pruneHeartbeats } = require('./collector/heartbeat');
+const { sendTelegram } = require('./utils/telegram');
 
 // ─── Graceful shutdown ──────────────────────────────────────────────────────
 
@@ -110,6 +111,12 @@ async function main() {
       const deleted = await pruneHeartbeats(7);
       if (deleted > 0) logger.info({ deleted }, 'Pruned old heartbeats');
     }, 24 * 60 * 60_000),  // 24h
+    runLoop('heartbeat-telegram', async () => {
+      await sendTelegram(
+        `✅ <b>Weather Bot</b> — alive\n` +
+        `🕐 ${new Date().toISOString()}`
+      );
+    }, 12 * 60 * 60_000), // 12 horas
   ];
 
   // Wait forever (or until shutdown)
