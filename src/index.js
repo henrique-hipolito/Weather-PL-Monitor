@@ -7,6 +7,8 @@ const { sleep } = require('./utils/retry');
 const { discoverMarkets } = require('./polymarket/marketSync');
 const { pollBooks } = require('./collector/bookPoller');
 const { syncForecasts } = require('./weather/forecastSync');
+const { syncObservations } = require('./weather/observationSync');
+const { checkAndSyncTmax } = require('./weather/tmaxSync');
 const { pruneHeartbeats } = require('./collector/heartbeat');
 
 // ─── Graceful shutdown ──────────────────────────────────────────────────────
@@ -99,9 +101,11 @@ async function main() {
   logger.info('Starting main loops ...');
 
   const loops = [
-    runLoop('market-discovery', discoverMarkets, config.MARKET_DISCOVERY_INTERVAL_MS),
-    runLoop('book-poller',      pollBooks,        config.POLL_INTERVAL_MS),
-    runLoop('forecast-sync',    syncForecasts,    config.FORECAST_INTERVAL_MS),
+    runLoop('market-discovery',    discoverMarkets,  config.MARKET_DISCOVERY_INTERVAL_MS),
+    runLoop('book-poller',         pollBooks,         config.POLL_INTERVAL_MS),
+    runLoop('forecast-sync',       syncForecasts,     config.FORECAST_INTERVAL_MS),
+    runLoop('observation-intraday', syncObservations, config.OBSERVATION_INTERVAL_MS),
+    runLoop('tmax-daily',          checkAndSyncTmax,  config.TMAX_CHECK_INTERVAL_MS),
     runLoop('heartbeat-prune', async () => {
       const deleted = await pruneHeartbeats(7);
       if (deleted > 0) logger.info({ deleted }, 'Pruned old heartbeats');

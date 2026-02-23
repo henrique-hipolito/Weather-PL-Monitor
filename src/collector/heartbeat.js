@@ -12,13 +12,10 @@ async function recordHeartbeat(eventId) {
   );
 }
 
-/**
- * Delete heartbeats older than the given number of days.
- */
-async function pruneHeartbeats(retentionDays = 7) {
+async function pruneHeartbeats(daysToKeep = 7) {
   const result = await db.query(
-    `DELETE FROM event_heartbeat WHERE ts < now() - make_interval(days => $1)`,
-    [retentionDays],
+    `DELETE FROM event_heartbeat WHERE ts < now() - ($1 || ' days')::interval`,
+    [daysToKeep],
   );
   return result.rowCount;
 }

@@ -4,10 +4,13 @@
 const POLL_INTERVAL_MS = 60_000;                // 1 min  — book polling
 const FORECAST_INTERVAL_MS = 30 * 60_000;       // 30 min — forecast refresh
 const MARKET_DISCOVERY_INTERVAL_MS = 15 * 60_000; // 15 min — discover new events
+const OBSERVATION_INTERVAL_MS = 60_000;           // 1 min  — intraday temp observation
+const TMAX_CHECK_INTERVAL_MS = 60 * 60_000;       // 1 hour — check if time to collect TMAX
 
 // ─── Thresholds ──────────────────────────────────────────────────────────────
 const BOOK_CHANGE_THRESHOLD_CENTS = 1;          // min 1 cent change in any mid
 const FORECAST_CHANGE_THRESHOLD = 0.5;          // 0.5 degree change to save
+const OBSERVATION_CHANGE_THRESHOLD = 0.5;       // 0.5 degree change to save intraday obs
 
 // ─── Resolution ──────────────────────────────────────────────────────────────
 const RESOLUTION_CONSECUTIVE_SNAPSHOTS = 3;
@@ -26,6 +29,7 @@ const POLYMARKET_GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const POLYMARKET_CLOB_BASE = 'https://clob.polymarket.com';
 const NWS_BASE = 'https://api.weather.gov';
 const OPEN_METEO_BASE = 'https://api.open-meteo.com/v1/forecast';
+const OPEN_METEO_HISTORICAL_BASE = 'https://archive-api.open-meteo.com/v1/archive';
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 const DAYS_AHEAD = 2;
@@ -59,10 +63,13 @@ module.exports = {
   POLL_INTERVAL_MS,
   FORECAST_INTERVAL_MS,
   MARKET_DISCOVERY_INTERVAL_MS,
+  OBSERVATION_INTERVAL_MS,
+  TMAX_CHECK_INTERVAL_MS,
 
   // Thresholds
   BOOK_CHANGE_THRESHOLD_CENTS,
   FORECAST_CHANGE_THRESHOLD,
+  OBSERVATION_CHANGE_THRESHOLD,
 
   // Resolution
   RESOLUTION_CONSECUTIVE_SNAPSHOTS,
@@ -81,6 +88,7 @@ module.exports = {
   POLYMARKET_CLOB_BASE,
   NWS_BASE,
   OPEN_METEO_BASE,
+  OPEN_METEO_HISTORICAL_BASE,
 
   // Misc
   DAYS_AHEAD,

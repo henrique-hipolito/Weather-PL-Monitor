@@ -202,9 +202,235 @@ async function fetchForecast(city, targetDateLocal) {
   return fetchOpenMeteoForecast(city, targetDateLocal);
 }
 
+// ─── NWS station cache ──────────────────────────────────────────────────────
+// Resolves the nearest observation station for a city. Cached in-memory.
+
+const nwsStationCache = new Map();
+
+/**
+ * Resolve the nearest NWS observation station for a city.
+ * Uses the stationUrl from the gridpoint lookup.
+ * @returns {string|null} stationId e.g. 'KNYC'
+ */
+async function resolveNwsStation(city) {
+  if (nwsStationCache.has(city.city_id)) {
+    return nwsStationCache.get(city.city_id);
+  }
+
+  const grid = await resolveNwsGrid(city.city_id, city.lat, city.lon);
+  if (!grid || !grid.stationUrl) return null;
+
+  const data = await withRetry(
+    () => fetchJson(grid.stationUrl, `nws:stations:${city.city_id}`),
+    { label: `nws:stations:${city.city_id}`, circuitKey: 'nws' },
+  );
+
+  if (!data || !data.features || data.features.length === 0) {
+    logger.warn({ city: city.city_id }, 'NWS stations list is empty');
+    return null;
+  }
+
+  // First station is the nearest
+  const stationId = data.features[0].properties.stationIdentifier;
+  nwsStationCache.set(city.city_id, stationId);
+  logger.info({ city: city.city_id, stationId }, 'NWS station resolved and cached');
+  return stationId;
+}
+
+// ─── Current temperature (intraday observations) ────────────────────────────
+
+/**
+ * Fetch current observed temperature for a US city from NWS.
+ * NWS returns °C — converts to °F for US cities.
+ *
+ * @param {Object} city
+ * @returns {{ value: number, unit: string, source: string, stationId: string } | null}
+ */
+async function fetchNwsCurrentTemp(city) {
+  const stationId = await resolveNwsStation(city);
+  if (!stationId) return null;
+
+  const url = `${config.NWS_BASE}/stations/${stationId}/observations/latest`;
+  const data = await withRetry(
+    () => fetchJson(url, `nws:obs:latest:${city.city_id}`),
+    { label: `nws:obs:latest:${city.city_id}`, circuitKey: 'nws' },
+  );
+
+  if (!data || !data.properties || !data.properties.temperature) return null;
+
+  const tempC = data.properties.temperature.value;
+  if (tempC == null) return null;
+
+  // NWS always returns °C; convert to °F for US cities
+  const value = city.unit === 'F'
+    ? Math.round(((tempC * 9 / 5) + 32) * 10) / 10
+    : Math.round(tempC * 10) / 10;
+
+  return {
+    value,
+    unit: city.unit,
+    source: `NOAA_NWS:${stationId}`,
+    stationId,
+  };
+}
+
+/**
+ * Fetch current observed temperature for an international city from Open-Meteo.
+ *
+ * @param {Object} city
+ * @returns {{ value: number, unit: string, source: string } | null}
+ */
+async function fetchOpenMeteoCurrentTemp(city) {
+  const tempUnit = city.unit === 'F' ? '&temperature_unit=fahrenheit' : '';
+  const url =
+    `${config.OPEN_METEO_BASE}` +
+    `?latitude=${city.lat}&longitude=${city.lon}` +
+    `&current=temperature_2m` +
+    `&timezone=${encodeURIComponent(city.timezone)}` +
+    tempUnit;
+
+  const data = await withRetry(
+    () => fetchJson(url, `openmeteo:current:${city.city_id}`),
+    { label: `openmeteo:current:${city.city_id}`, circuitKey: 'openmeteo' },
+  );
+
+  if (!data || !data.current || data.current.temperature_2m == null) return null;
+
+  return {
+    value: Math.round(data.current.temperature_2m * 10) / 10,
+    unit: city.unit,
+    source: 'Open-Meteo',
+  };
+}
+
+/**
+ * Fetch current observed temperature for any city (unified with fallback).
+ */
+async function fetchCurrentTemp(city) {
+  if (city.provider === 'NOAA_NWS') {
+    const nws = await fetchNwsCurrentTemp(city);
+    if (nws) return nws;
+
+    logger.info({ city: city.city_id }, 'NWS current temp failed — falling back to Open-Meteo');
+    const om = await fetchOpenMeteoCurrentTemp(city);
+    if (om) {
+      om.source = 'Open-Meteo:fallback';
+      return om;
+    }
+    return null;
+  }
+
+  return fetchOpenMeteoCurrentTemp(city);
+}
+
+// ─── Daily TMAX (consolidated max of day) ───────────────────────────────────
+
+/**
+ * Fetch consolidated TMAX from NWS for a US city on a specific date.
+ * Iterates all observations of the day and finds the maximum.
+ *
+ * @param {Object} city
+ * @param {string} dateLocal - 'YYYY-MM-DD'
+ * @returns {{ value: number, unit: string, source: string, stationId: string } | null}
+ */
+async function fetchNwsDailyTmax(city, dateLocal) {
+  const stationId = await resolveNwsStation(city);
+  if (!stationId) return null;
+
+  const url =
+    `${config.NWS_BASE}/stations/${stationId}/observations` +
+    `?start=${dateLocal}T00:00:00Z&end=${dateLocal}T23:59:59Z`;
+
+  const data = await withRetry(
+    () => fetchJson(url, `nws:obs:daily:${city.city_id}`),
+    { label: `nws:obs:daily:${city.city_id}`, circuitKey: 'nws' },
+  );
+
+  if (!data || !data.features || data.features.length === 0) return null;
+
+  // Find max temperature across all observations
+  let maxTempC = -Infinity;
+  for (const obs of data.features) {
+    const t = obs.properties?.temperature?.value;
+    if (t != null && t > maxTempC) {
+      maxTempC = t;
+    }
+  }
+
+  if (maxTempC === -Infinity) return null;
+
+  const value = city.unit === 'F'
+    ? Math.round(((maxTempC * 9 / 5) + 32) * 10) / 10
+    : Math.round(maxTempC * 10) / 10;
+
+  return {
+    value,
+    unit: city.unit,
+    source: `NOAA_NWS:${stationId}`,
+    stationId,
+  };
+}
+
+/**
+ * Fetch consolidated TMAX from Open-Meteo historical archive.
+ *
+ * @param {Object} city
+ * @param {string} dateLocal - 'YYYY-MM-DD'
+ * @returns {{ value: number, unit: string, source: string } | null}
+ */
+async function fetchOpenMeteoDailyTmax(city, dateLocal) {
+  const tempUnit = city.unit === 'F' ? '&temperature_unit=fahrenheit' : '';
+  const url =
+    `${config.OPEN_METEO_HISTORICAL_BASE}` +
+    `?latitude=${city.lat}&longitude=${city.lon}` +
+    `&start_date=${dateLocal}&end_date=${dateLocal}` +
+    `&daily=temperature_2m_max` +
+    `&timezone=${encodeURIComponent(city.timezone)}` +
+    tempUnit;
+
+  const data = await withRetry(
+    () => fetchJson(url, `openmeteo:tmax:${city.city_id}`),
+    { label: `openmeteo:tmax:${city.city_id}`, circuitKey: 'openmeteo' },
+  );
+
+  if (!data || !data.daily || !data.daily.temperature_2m_max) return null;
+
+  const tMax = data.daily.temperature_2m_max[0];
+  if (tMax == null) return null;
+
+  return {
+    value: Math.round(tMax * 10) / 10,
+    unit: city.unit,
+    source: 'Open-Meteo:historical',
+  };
+}
+
+/**
+ * Fetch consolidated TMAX for any city (unified with fallback).
+ */
+async function fetchDailyTmax(city, dateLocal) {
+  if (city.provider === 'NOAA_NWS') {
+    const nws = await fetchNwsDailyTmax(city, dateLocal);
+    if (nws) return nws;
+
+    logger.info({ city: city.city_id, dateLocal }, 'NWS TMAX failed — falling back to Open-Meteo');
+    const om = await fetchOpenMeteoDailyTmax(city, dateLocal);
+    if (om) {
+      om.source = 'Open-Meteo:historical:fallback';
+      return om;
+    }
+    return null;
+  }
+
+  return fetchOpenMeteoDailyTmax(city, dateLocal);
+}
+
 module.exports = {
   fetchNwsForecast,
   fetchOpenMeteoForecast,
   fetchForecast,
   resolveNwsGrid,
+  resolveNwsStation,
+  fetchCurrentTemp,
+  fetchDailyTmax,
 };

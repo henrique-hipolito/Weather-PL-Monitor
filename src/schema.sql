@@ -12,6 +12,7 @@ DO $$ BEGIN CREATE TYPE trade_side  AS ENUM ('BUY', 'SELL');          EXCEPTION 
 DO $$ BEGIN CREATE TYPE order_type  AS ENUM ('LIMIT', 'IOC', 'MARKET'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE temp_unit   AS ENUM ('F', 'C');               EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE metric_type AS ENUM ('TMAX');                 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER TYPE metric_type ADD VALUE IF NOT EXISTS 'TOBS';   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE bin_type    AS ENUM ('RANGE', 'GE', 'LE', 'EQ'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ─── cities ──────────────────────────────────────────────────────────────────
@@ -214,3 +215,30 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_event_ts ON trades(event_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_tag);
+
+-- ─── observations_intraday (SCD2-like, temperature at time of reading) ──────
+CREATE TABLE IF NOT EXISTS observations_intraday (
+  obs_id         BIGSERIAL PRIMARY KEY,
+  city_id        TEXT NOT NULL REFERENCES cities(city_id),
+  station_id     TEXT REFERENCES stations(station_id),
+
+  -- SCD2-like
+  valid_from     TIMESTAMPTZ NOT NULL,
+  valid_to       TIMESTAMPTZ NOT NULL DEFAULT 'infinity',
+  is_current     BOOLEAN NOT NULL DEFAULT true,
+
+  obs_date_local DATE NOT NULL,
+  metric         metric_type NOT NULL DEFAULT 'TOBS',
+  unit           temp_unit NOT NULL,
+  value          NUMERIC(6,2) NOT NULL,
+  source         TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (city_id, valid_from, metric)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_intraday_current
+  ON observations_intraday(city_id, metric) WHERE is_current = true;
+CREATE INDEX IF NOT EXISTS idx_obs_intraday_city_date
+  ON observations_intraday(city_id, obs_date_local);
+CREATE INDEX IF NOT EXISTS idx_obs_intraday_ts
+  ON observations_intraday(city_id, valid_from DESC);
