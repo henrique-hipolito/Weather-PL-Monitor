@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS market_open_context (
   opened_at                  TIMESTAMPTZ NOT NULL,
   initial_forecast_state_id  BIGINT REFERENCES event_forecast_state(forecast_state_id),
   initial_orderbook_state_id BIGINT REFERENCES event_orderbook_state(state_id),
+  initial_volume             DOUBLE PRECISION,
   created_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

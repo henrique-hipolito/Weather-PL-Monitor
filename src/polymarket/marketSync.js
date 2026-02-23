@@ -106,12 +106,13 @@ async function registerEvent(city, dateLocal, slug, pmEvent) {
       // 4. Fetch initial prices via batch endpoints and create first orderbook state
       const initialState = await buildInitialOrderbookState(client, eventId, markets);
 
-      // 5. Create market_open_context
+      // 5. Create market_open_context (with initial volume from Gamma API)
+      const initialVolume = parseFloat(pmEvent.volume) || null;
       await client.query(
-        `INSERT INTO market_open_context (event_id, opened_at, initial_orderbook_state_id)
-         VALUES ($1, now(), $2)
+        `INSERT INTO market_open_context (event_id, opened_at, initial_orderbook_state_id, initial_volume)
+         VALUES ($1, now(), $2, $3)
          ON CONFLICT (event_id) DO NOTHING`,
-        [eventId, initialState?.stateId || null],
+        [eventId, initialState?.stateId || null, initialVolume],
       );
 
       await client.query('COMMIT');
