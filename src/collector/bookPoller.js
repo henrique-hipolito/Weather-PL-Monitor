@@ -2,7 +2,7 @@
 
 const logger = require('../utils/logger');
 const { getActiveEvents, getEventMarketDims } = require('../polymarket/marketSync');
-const { fetchEventPrices } = require('../polymarket/client');
+const { fetchEventPricesFromGamma } = require('../polymarket/client');
 const { updateOrderbookState } = require('./stateManager');
 const { recordHeartbeat } = require('./heartbeat');
 const { checkResolution } = require('../resolver/outcomeDetector');
@@ -29,7 +29,7 @@ async function pollBooks() {
 }
 
 /**
- * Poll a single event: batch fetch prices, compute state, update SCD2, heartbeat.
+ * Poll a single event: fetch prices from Gamma API, compute state, update SCD2, heartbeat.
  */
 async function pollSingleEvent(event, stats) {
   const marketDims = await getEventMarketDims(event.event_id);
@@ -39,8 +39,8 @@ async function pollSingleEvent(event, stats) {
     return;
   }
 
-  // Batch fetch: 2 requests total (midpoints + spreads)
-  const prices = await fetchEventPrices(marketDims);
+  // Single Gamma API request per event
+  const prices = await fetchEventPricesFromGamma(event.polymarket_event_id, marketDims);
 
   // Build arrays in bin order
   const midsCents = prices.map(p => Math.round(p.mid * 100));
@@ -49,8 +49,11 @@ async function pollSingleEvent(event, stats) {
   // Build YES prices for resolution detection
   const yesPrices = marketDims.map((dim, i) => ({
     label: dim.label,
-    yesPrice: prices[i].mid,
+    yesPrice: prices[i].yesPrice,
   }));
+
+  // Aggregate volume across all markets in the event
+  const volume24h = prices.reduce((sum, p) => sum + (p.volume24h || 0), 0);
 
   stats.polled++;
 
@@ -59,7 +62,7 @@ async function pollSingleEvent(event, stats) {
     event.event_id,
     midsCents,
     spreadsCents,
-    {},  // aggregates not available from batch endpoints
+    { volume24h },
   );
 
   if (changed) {

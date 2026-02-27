@@ -5,7 +5,7 @@ const db = require('../db');
 const logger = require('../utils/logger');
 const { targetDates } = require('../utils/timezone');
 const { buildEventSlug } = require('./slugBuilder');
-const { fetchEventBySlug, extractMarkets, fetchEventPrices } = require('./client');
+const { fetchEventBySlug, extractMarkets, fetchEventPricesFromGamma } = require('./client');
 
 /**
  * Run one cycle of market discovery for all cities.
@@ -103,8 +103,8 @@ async function registerEvent(city, dateLocal, slug, pmEvent) {
         );
       }
 
-      // 4. Fetch initial prices via batch endpoints and create first orderbook state
-      const initialState = await buildInitialOrderbookState(client, eventId, markets);
+      // 4. Fetch initial prices via Gamma API and create first orderbook state
+      const initialState = await buildInitialOrderbookState(client, eventId, pmEvent.id, markets);
 
       // 5. Create market_open_context (with initial volume from Gamma API)
       const initialVolume = parseFloat(pmEvent.volume) || null;
@@ -133,15 +133,14 @@ async function registerEvent(city, dateLocal, slug, pmEvent) {
 }
 
 /**
- * Fetch initial prices using batch CLOB endpoints and insert the first orderbook state.
+ * Fetch initial prices via Gamma API and insert the first orderbook state.
  */
-async function buildInitialOrderbookState(client, eventId, markets) {
+async function buildInitialOrderbookState(client, eventId, pmEventId, markets) {
   const { computeHash } = require('../collector/stateManager');
 
   try {
-    // Build market_dim-like objects for fetchEventPrices
-    const dimLike = markets.map(m => ({ token_id_yes: m.tokenIdYes }));
-    const prices = await fetchEventPrices(dimLike);
+    const dimLike = markets.map(m => ({ market_id: m.marketId, label: m.label }));
+    const prices = await fetchEventPricesFromGamma(pmEventId, dimLike);
 
     const midsCents = prices.map(p => Math.round(p.mid * 100));
     const spreadsCents = prices.map(p => Math.round(p.spread * 100));

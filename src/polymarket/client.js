@@ -65,99 +65,60 @@ async function fetchGammaMarket(marketId) {
   );
 }
 
-// ─── CLOB API — Batch pricing ────────────────────────────────────────────────
+// ─── Gamma API — Event pricing ───────────────────────────────────────────────
+// Temperature markets are AMM-based (no CLOB orderbook).
+// Prices come from the outcomePrices field in the Gamma API event response.
 
 /**
- * Fetch midpoint prices for multiple token IDs in a single request.
- * Midpoint = (bestBid + bestAsk) / 2, computed server-side.
+ * Fetch current prices for all markets of an event via Gamma API.
+ * Uses outcomePrices field which is always available for temperature markets.
  *
- * @param {string[]} tokenIds - Array of YES token IDs
- * @returns {Map<string, number>} Map of tokenId → midpoint (0-1)
+ * @param {string} polymarketEventId - Numeric event ID (e.g. "227475")
+ * @param {Array<{ market_id: string, label: string }>} marketDims - market_dim rows in bin order
+ * @returns {Array<{ mid: number, spread: number, yesPrice: number, noPrice: number, volume24h: number }>}
  */
-async function fetchMidpoints(tokenIds) {
-  if (tokenIds.length === 0) return new Map();
+async function fetchEventPricesFromGamma(polymarketEventId, marketDims) {
+  if (!polymarketEventId) {
+    return marketDims.map(() => ({ mid: 0, spread: 0, yesPrice: 0, noPrice: 0, volume24h: 0 }));
+  }
 
-  const url = `${config.POLYMARKET_CLOB_BASE}/midpoints?token_ids=${tokenIds.join(',')}`;
+  const url = `${config.POLYMARKET_GAMMA_BASE}/events/${encodeURIComponent(polymarketEventId)}`;
 
-  const data = await withRetry(
-    () => fetchJson(url, `clob:midpoints:${tokenIds.length}ids`),
-    { label: `clob:midpoints:${tokenIds.length}ids`, circuitKey: 'polymarket' },
+  const event = await withRetry(
+    () => fetchJson(url, `gamma:event:prices:${polymarketEventId}`),
+    { label: `gamma:event:prices:${polymarketEventId}`, circuitKey: 'polymarket' },
   );
 
-  if (!data || typeof data !== 'object') return new Map();
+  if (!event || !event.markets) {
+    return marketDims.map(() => ({ mid: 0, spread: 0, yesPrice: 0, noPrice: 0, volume24h: 0 }));
+  }
 
-  const result = new Map();
-  for (const [tokenId, priceStr] of Object.entries(data)) {
-    const price = parseFloat(priceStr);
-    if (!isNaN(price)) {
-      result.set(tokenId, price);
+  // Build lookup by market_id for O(1) access
+  const priceByMarketId = new Map();
+  for (const m of event.markets) {
+    try {
+      const rawPrices = m.outcomePrices;
+      const prices = typeof rawPrices === 'string' ? JSON.parse(rawPrices) : rawPrices;
+      const yesPrice = parseFloat(prices?.[0] ?? '0') || 0;
+      const noPrice = parseFloat(prices?.[1] ?? '0') || 0;
+      const mid = yesPrice; // For AMM markets, outcomePrices[0] IS the price
+      const spread = parseFloat(m.spread ?? '0') || 0;
+      const volume24h = parseFloat(m.volume24hr ?? '0') || 0;
+
+      priceByMarketId.set(String(m.id), { mid, spread, yesPrice, noPrice, volume24h });
+    } catch (err) {
+      logger.warn({ err: err.message, marketId: m.id }, 'Failed to parse outcomePrices');
     }
   }
-  return result;
-}
 
-/**
- * Fetch spreads for multiple token IDs in a single request.
- * Spread = bestAsk - bestBid, computed server-side.
- *
- * @param {string[]} tokenIds - Array of YES token IDs
- * @returns {Map<string, number>} Map of tokenId → spread (0-1)
- */
-async function fetchSpreads(tokenIds) {
-  if (tokenIds.length === 0) return new Map();
-
-  const body = tokenIds.map(id => ({ token_id: id }));
-
-  const data = await withRetry(
-    () => fetchJson(`${config.POLYMARKET_CLOB_BASE}/spreads`, `clob:spreads:${tokenIds.length}ids`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    }),
-    { label: `clob:spreads:${tokenIds.length}ids`, circuitKey: 'polymarket' },
-  );
-
-  if (!data || typeof data !== 'object') return new Map();
-
-  const result = new Map();
-  for (const [tokenId, spreadStr] of Object.entries(data)) {
-    const spread = parseFloat(spreadStr);
-    if (!isNaN(spread)) {
-      result.set(tokenId, spread);
+  // Return in same order as marketDims (bin order)
+  return marketDims.map(dim => {
+    const price = priceByMarketId.get(String(dim.market_id));
+    if (!price) {
+      logger.debug({ marketId: dim.market_id, label: dim.label }, 'Market not found in Gamma response');
+      return { mid: 0, spread: 0, yesPrice: 0, noPrice: 0, volume24h: 0 };
     }
-  }
-  return result;
-}
-
-/**
- * Fetch midpoints + spreads for an event's markets in 2 batch requests.
- * Returns array of { mid, spread } in the same order as input marketDims.
- *
- * @param {Array<{ token_id_yes: string }>} marketDims - market_dim rows with YES token IDs
- * @returns {Array<{ mid: number, spread: number }>} Prices in same order as input
- */
-async function fetchEventPrices(marketDims) {
-  const tokenIds = marketDims
-    .map(m => m.token_id_yes)
-    .filter(Boolean);
-
-  if (tokenIds.length === 0) {
-    return marketDims.map(() => ({ mid: 0, spread: 0 }));
-  }
-
-  // Batch fetch: 2 requests total per event
-  const [mids, spreads] = await Promise.all([
-    fetchMidpoints(tokenIds),
-    fetchSpreads(tokenIds),
-  ]);
-
-  return marketDims.map(m => {
-    const tokenId = m.token_id_yes;
-    if (!tokenId) return { mid: 0, spread: 0 };
-    return {
-      mid: mids.get(tokenId) || 0,
-      spread: spreads.get(tokenId) || 0,
-    };
+    return price;
   });
 }
 
@@ -250,9 +211,7 @@ function extractMarkets(event) {
 module.exports = {
   fetchEventBySlug,
   fetchGammaMarket,
-  fetchMidpoints,
-  fetchSpreads,
-  fetchEventPrices,
+  fetchEventPricesFromGamma,
   parseOutcomeLabel,
   extractMarkets,
 };
