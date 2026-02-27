@@ -11,6 +11,7 @@ const { syncObservations } = require('./weather/observationSync');
 const { checkAndSyncTmax } = require('./weather/tmaxSync');
 const { pruneHeartbeats } = require('./collector/heartbeat');
 const BOT_START_TIME = Date.now();
+const { sendTelegram } = require('./utils/telegram');
 
 // ─── Graceful shutdown ──────────────────────────────────────────────────────
 

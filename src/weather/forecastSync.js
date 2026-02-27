@@ -23,7 +23,9 @@ async function syncForecasts() {
         continue;
       }
 
-      const targetDateLocal = event.event_date_local;
+      const targetDateLocal = event.event_date_local instanceof Date
+        ? event.event_date_local.toISOString().slice(0, 10)
+        : String(event.event_date_local).slice(0, 10);
 
       // Fetch forecast
       const forecast = await fetchForecast(city, targetDateLocal);
